@@ -157,6 +157,18 @@ func runStart(cmd *cobra.Command, args []string) {
 }
 
 func runStop(cmd *cobra.Command, args []string) {
+	ffplayPidPath := filepath.Join(os.TempDir(), "fit_ffplay.pid")
+
+	// ffplay 프로세스 먼저 kill
+	if data, err := os.ReadFile(ffplayPidPath); err == nil {
+		if ffpid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+			if p, err := os.FindProcess(ffpid); err == nil {
+				p.Kill()
+			}
+		}
+	}
+
+	// _run 루프 프로세스 kill
 	pid, err := readPID()
 	if err != nil {
 		fmt.Println("재생 중인 음악이 없습니다.")
@@ -171,10 +183,12 @@ func runStop(cmd *cobra.Command, args []string) {
 		fmt.Println("종료 실패:", err)
 		return
 	}
+
 	os.Remove(pidFilePath())
 	os.Remove(stateFilePath())
 	os.Remove(skipFilePath())
 	os.Remove(queueFilePath())
+	os.Remove(ffplayPidPath)
 	fmt.Println("⏹  재생을 중지했습니다.")
 }
 

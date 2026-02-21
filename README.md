@@ -1,7 +1,8 @@
 # fit 🎵
 
-타이핑하기 맛있는 만물 잡동사니 CLI
+만물 잡동사니 CLI
 
+> Fit 이름은 아무의미 없습니다. 쉽고 빠르게 타이핑하기 위해 Fit이라 지었습니다.
 > `f`(왼손) → `i`(오른손) → `t`(왼손) — git과 같은 리듬감
 
 ---
@@ -11,7 +12,7 @@
 ### 요구사항
 
 - [Go 1.21+](https://golang.org/dl/)
-- [ffmpeg](https://ffmpeg.org/download.html) (라디오 기능에 필요)
+- [ffmpeg](https://ffmpeg.org/download.html) (라디오 + 음악 재생에 필요)
 
 ### 빌드
 
