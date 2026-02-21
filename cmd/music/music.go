@@ -3,9 +3,7 @@ package music
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/rand"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hajimehoshi/go-mp3"
-	"github.com/hajimehoshi/oto/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -24,13 +20,14 @@ import (
 func stateFilePath() string { return filepath.Join(os.TempDir(), "fit_music_state.json") }
 func pidFilePath() string   { return filepath.Join(os.TempDir(), "fit_music.pid") }
 func skipFilePath() string  { return filepath.Join(os.TempDir(), "fit_music.skip") }
+func queueFilePath() string { return filepath.Join(os.TempDir(), "fit_music_queue.json") }
 
 // ───────────────────────────── 상태 관리 ─────────────────────────────
 
 type MusicState struct {
 	CurrentTrack string `json:"current_track"`
 	StartedAt    string `json:"started_at"`
-	Mode         string `json:"mode"` // "local" or "radio"
+	Mode         string `json:"mode"`
 }
 
 func writeState(track, mode string) {
@@ -117,19 +114,12 @@ var internalRunCmd = &cobra.Command{
 	Run:    runInternal,
 }
 
-var internalRadioCmd = &cobra.Command{
-	Use:    "_radio",
-	Hidden: true,
-	Run:    runInternalRadio,
-}
-
 func init() {
 	MusicCmd.AddCommand(startCmd)
 	MusicCmd.AddCommand(stopCmd)
 	MusicCmd.AddCommand(statusCmd)
 	MusicCmd.AddCommand(skipCmd)
 	MusicCmd.AddCommand(internalRunCmd)
-	MusicCmd.AddCommand(internalRadioCmd)
 }
 
 // ───────────────────────────── 커맨드 핸들러 ─────────────────────────────
@@ -139,7 +129,31 @@ func runStart(cmd *cobra.Command, args []string) {
 		fmt.Println("이미 재생 중입니다. `fit music status` 로 확인하세요.")
 		return
 	}
-	startBackground("music", "_run")
+
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "실행 파일 경로를 찾을 수 없습니다:", err)
+		os.Exit(1)
+	}
+
+	proc := exec.Command(exe, "music", "_run")
+	proc.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	}
+	proc.Stdout = nil
+	proc.Stderr = nil
+	proc.Stdin = nil
+
+	if err := proc.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "백그라운드 실행 실패:", err)
+		os.Exit(1)
+	}
+
+	writePID(proc.Process.Pid)
+	fmt.Printf("🎵 음악 재생 시작! (PID: %d)\n", proc.Process.Pid)
+	fmt.Println("  fit music status  - 현재 곡 확인")
+	fmt.Println("  fit music skip    - 다음 곡")
+	fmt.Println("  fit music stop    - 정지")
 }
 
 func runStop(cmd *cobra.Command, args []string) {
@@ -160,6 +174,7 @@ func runStop(cmd *cobra.Command, args []string) {
 	os.Remove(pidFilePath())
 	os.Remove(stateFilePath())
 	os.Remove(skipFilePath())
+	os.Remove(queueFilePath())
 	fmt.Println("⏹  재생을 중지했습니다.")
 }
 
@@ -173,11 +188,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 		fmt.Println("상태를 읽을 수 없습니다.")
 		return
 	}
-	icon := "🎵"
-	if state.Mode == "radio" {
-		icon = "📻"
-	}
-	fmt.Printf("%s  %s\n", icon, state.CurrentTrack)
+	fmt.Printf("🎵 %s\n", state.CurrentTrack)
 	fmt.Printf("   재생 시작: %s\n", state.StartedAt)
 }
 
@@ -190,34 +201,7 @@ func runSkip(cmd *cobra.Command, args []string) {
 	fmt.Println("⏭  다음 곡으로 넘깁니다.")
 }
 
-// ───────────────────────────── 백그라운드 실행 ─────────────────────────────
-
-func startBackground(subcmd, arg string) {
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "실행 파일 경로를 찾을 수 없습니다:", err)
-		os.Exit(1)
-	}
-	proc := exec.Command(exe, subcmd, arg)
-	proc.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
-	}
-	proc.Stdout = nil
-	proc.Stderr = nil
-	proc.Stdin = nil
-
-	if err := proc.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "백그라운드 실행 실패:", err)
-		os.Exit(1)
-	}
-	writePID(proc.Process.Pid)
-	fmt.Printf("🎵 재생 시작! (PID: %d)\n", proc.Process.Pid)
-	fmt.Println("  fit music status  - 현재 곡 확인")
-	fmt.Println("  fit music skip    - 다음 곡")
-	fmt.Println("  fit music stop    - 정지")
-}
-
-// ───────────────────────────── 로컬 재생 루프 ─────────────────────────────
+// ───────────────────────────── 재생 루프 (_run) ─────────────────────────────
 
 func runInternal(cmd *cobra.Command, args []string) {
 	musicDir, err := getMusicDir()
@@ -229,121 +213,52 @@ func runInternal(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	ctx, readyChan, err := oto.NewContext(44100, 2, 2)
-	if err != nil {
-		os.Exit(1)
-	}
-	<-readyChan
-
 	rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	for {
 		rand.Shuffle(len(files), func(i, j int) { files[i], files[j] = files[j], files[i] })
 		for _, path := range files {
-			playLocalFile(ctx, path)
+			playWithFFplay(path)
 		}
 	}
 }
 
-func playLocalFile(ctx *oto.Context, path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	decoder, err := mp3.NewDecoder(f)
-	if err != nil {
-		return
-	}
-
+func playWithFFplay(path string) {
 	writeState(filepath.Base(path), "local")
 
-	player := ctx.NewPlayer(decoder)
-	defer player.Close()
-	player.Play()
+	proc := exec.Command("ffplay", "-nodisp", "-loglevel", "quiet", "-autoexit", path)
+	proc.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	}
+	proc.Stdout = nil
+	proc.Stderr = nil
+	proc.Stdin = nil
+
+	if err := proc.Start(); err != nil {
+		return
+	}
+
+	// ffplay 프로세스 PID를 별도 파일에 저장 (skip용)
+	ffplayPidPath := filepath.Join(os.TempDir(), "fit_ffplay.pid")
+	os.WriteFile(ffplayPidPath, []byte(strconv.Itoa(proc.Process.Pid)), 0644)
+	defer os.Remove(ffplayPidPath)
+
+	done := make(chan error, 1)
+	go func() { done <- proc.Wait() }()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-
-	for player.IsPlaying() {
-		<-ticker.C
-		if _, err := os.Stat(skipFilePath()); err == nil {
-			os.Remove(skipFilePath())
-			return
-		}
-	}
-}
-
-// ───────────────────────────── 라디오 스트리밍 ─────────────────────────────
-
-func runInternalRadio(cmd *cobra.Command, args []string) {
-	if len(args) == 0 {
-		os.Exit(1)
-	}
-	url := args[0]
-	name := args[1]
-	if len(args) < 2 {
-		name = url
-	}
-
-	ctx, readyChan, err := oto.NewContext(44100, 2, 2)
-	if err != nil {
-		os.Exit(1)
-	}
-	<-readyChan
 
 	for {
-		playRadioStream(ctx, url, name)
-		time.Sleep(3 * time.Second) // 끊기면 재연결
-	}
-}
-
-func playRadioStream(ctx *oto.Context, url, name string) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	decoder, err := mp3.NewDecoder(resp.Body)
-	if err != nil {
-		// mp3 디코딩 실패 시 raw 스트림으로 시도
-		playRawStream(ctx, resp.Body, name)
-		return
-	}
-
-	writeState(name, "radio")
-
-	player := ctx.NewPlayer(decoder)
-	defer player.Close()
-	player.Play()
-
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for player.IsPlaying() {
-		<-ticker.C
-		if _, err := os.Stat(skipFilePath()); err == nil {
-			os.Remove(skipFilePath())
+		select {
+		case <-done:
 			return
-		}
-	}
-}
-
-func playRawStream(ctx *oto.Context, r io.Reader, name string) {
-	writeState(name, "radio")
-	player := ctx.NewPlayer(r)
-	defer player.Close()
-	player.Play()
-
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for player.IsPlaying() {
-		<-ticker.C
-		if _, err := os.Stat(skipFilePath()); err == nil {
-			os.Remove(skipFilePath())
-			return
+		case <-ticker.C:
+			if _, err := os.Stat(skipFilePath()); err == nil {
+				os.Remove(skipFilePath())
+				proc.Process.Kill()
+				return
+			}
 		}
 	}
 }
