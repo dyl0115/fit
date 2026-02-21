@@ -1,0 +1,27 @@
+# 바이너리
+fit.exe
+fit
+
+# 빌드 결과물
+/dist/
+/build/
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 환경변수
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
