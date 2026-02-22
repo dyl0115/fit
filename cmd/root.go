@@ -6,6 +6,7 @@ import (
 
 	"github.com/dyl01/fit/cmd/music"
 	"github.com/dyl01/fit/cmd/radio"
+	"github.com/dyl01/fit/cmd/youtube"
 	"github.com/spf13/cobra"
 )
 
@@ -25,4 +26,5 @@ func Execute() {
 func init() {
 	rootCmd.AddCommand(music.MusicCmd)
 	rootCmd.AddCommand(radio.RadioCmd)
+	rootCmd.AddCommand(youtube.YoutubeCmd)
 }
